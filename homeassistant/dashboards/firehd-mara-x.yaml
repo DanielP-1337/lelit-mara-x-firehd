@@ -1,0 +1,23 @@
+title: FireHD Mara X
+views:
+  - title: Mara X
+    path: tablet
+    type: panel
+    cards:
+      - type: custom:marax-firehd-card
+        kiosk: true
+        flow_min_ml_s: 1
+        flow_max_ml_s: 1.4
+        low_water_percent: 25
+        entities:
+          ready: binary_sensor.marax_ready_2
+          heater: binary_sensor.lelit_mara_x_v2_heating
+          pump: binary_sensor.lelit_mara_x_v2_pump
+          hx: sensor.lelit_mara_x_v2_mara_heat_exchanger_actual
+          flow: sensor.lelit_mara_x_v2_water_flow
+          total: sensor.lelit_mara_x_v2_water_total
+          tank_status: sensor.marax_tank_status
+          tank_level: sensor.marax_tank_level
+          tds: sensor.kuche_lelit_mara_x_v2_mara_x_tds_compensated
+          plug: switch.mara_x_steckdose
+          power: sensor.mara_x_steckdose_leistung

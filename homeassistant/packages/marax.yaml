@@ -1,0 +1,317 @@
+template:
+  - triggers:
+      - trigger: state
+        entity_id: binary_sensor.lelit_mara_x_v2_pump
+        to: null
+        id: pump
+      - trigger: state
+        entity_id: sensor.marax_status
+        to: null
+        id: mode
+      - trigger: state
+        entity_id: sensor.lelit_mara_x_v2_water_total
+        to: null
+        id: total
+      - trigger: homeassistant
+        event: start
+        id: init
+      - trigger: event
+        event_type: event_template_reloaded
+        id: init
+    actions:
+      - variables:
+          starting: "{{ trigger.id == 'pump' and trigger.from_state is not none and trigger.from_state.state == 'off' and trigger.to_state is not none and trigger.to_state.state == 'on' }}"
+          stopping: "{{ trigger.id == 'pump' and trigger.from_state is not none and trigger.from_state.state == 'on' and trigger.to_state is not none and trigger.to_state.state == 'off' }}"
+          running: "{{ is_state('binary_sensor.lelit_mara_x_v2_pump', 'on') }}"
+          total_ml: "{{ states('sensor.lelit_mara_x_v2_water_total') | float(none) }}"
+          mode: "{{ states('sensor.marax_status') }}"
+          counter_fault: >-
+            {{ trigger.id == 'total' and
+               (trigger.to_state is none or not is_number(trigger.to_state.state) or
+                (trigger.from_state is not none and is_number(trigger.from_state.state) and
+                 trigger.to_state.state | float(0) < trigger.from_state.state | float(0))) }}
+    sensor:
+      - name: "MaraX Shot Volume"
+        unique_id: marax_shot_volume
+        unit_of_measurement: "ml"
+        state: >-
+          {% set a = this.attributes if this is defined and this is not none else {} %}
+          {% set base = a.get('start_total_ml') %}
+          {% if stopping and a.get('run_mode') == 'flow' and mode not in ['🟣 Steam', '🫖 Hot Water']
+                and a.get('started_at') == as_timestamp(trigger.from_state.last_changed)
+                and as_timestamp(trigger.to_state.last_changed) - as_timestamp(trigger.from_state.last_changed) >= 3
+                and is_number(total_ml) and is_number(base) and total_ml | float > base | float %}
+            {{ (total_ml | float - base | float) | round(1) }}
+          {% else %}
+            {{ this.state | float(none) if a.get('tracking_version') == 1 else none }}
+          {% endif %}
+        attributes:
+          tracking_version: "{{ 1 }}"
+          started_at: >-
+            {{ as_timestamp(trigger.to_state.last_changed) if starting else
+               (this.attributes.get('started_at') if running and trigger.id != 'init' and this is not none else none) }}
+          start_total_ml: >-
+            {{ total_ml if starting else
+               (this.attributes.get('start_total_ml') if running and not counter_fault and trigger.id != 'init' and this is not none else none) }}
+          run_mode: >-
+            {% set prev = this.attributes.get('run_mode') if this is not none and not starting else none %}
+            {% if not running or trigger.id == 'init' %}{{ none }}
+            {% elif mode in ['🟣 Steam', '🫖 Hot Water'] or prev == 'other' %}other
+            {% elif mode == '🔵 Water Flow' or prev == 'flow' %}flow
+            {% else %}{{ none }}{% endif %}
+
+  - sensor:
+      - name: "MaraX Tank Delta"
+        unique_id: marax_tank_delta
+        availability: >-
+          {{ is_number(states('sensor.lelit_mara_x_v2_tank_upper')) and
+             is_number(states('sensor.lelit_mara_x_v2_tank_bottom')) }}
+        unit_of_measurement: "°C"
+        state: >
+          {{
+            (
+              states('sensor.lelit_mara_x_v2_tank_upper') | float(0)
+              -
+              states('sensor.lelit_mara_x_v2_tank_bottom') | float(0)
+            ) | round(1)
+          }}
+
+  - binary_sensor:
+      - name: "MaraX Ready"
+        unique_id: marax_ready_v3
+        availability: >-
+          {{ is_number(states('sensor.lelit_mara_x_v2_mara_steam_target')) and
+             is_number(states('sensor.lelit_mara_x_v2_mara_heat_exchanger_actual')) }}
+        state: >
+          {% set steam_target =
+             states('sensor.lelit_mara_x_v2_mara_steam_target') | float(0) %}
+          {% set hx =
+             states('sensor.lelit_mara_x_v2_mara_heat_exchanger_actual') | float(0) %}
+          
+          {{
+            steam_target >=110 and
+            hx >= 90
+          }}
+
+
+  - sensor:
+      - name: "MaraX Status"
+        unique_id: marax_status
+        availability: >-
+          {{ is_number(states('sensor.lelit_mara_x_v2_mara_steam_target')) and
+             is_number(states('sensor.lelit_mara_x_v2_mara_heat_exchanger_actual')) and
+             is_number(states('sensor.lelit_mara_x_v2_water_flow')) and
+             has_value('binary_sensor.lelit_mara_x_v2_pump') and
+             has_value('binary_sensor.lelit_mara_x_v2_heating') }}
+        state: >
+          {% set steam_target =
+             states('sensor.lelit_mara_x_v2_mara_steam_target') | float(0) %}
+          {% set hx =
+             states('sensor.lelit_mara_x_v2_mara_heat_exchanger_actual') | float(0) %}
+
+          {% set pump =
+             states('binary_sensor.lelit_mara_x_v2_pump') == 'on' %}
+          {% set heating =
+             states('binary_sensor.lelit_mara_x_v2_heating') == 'on' %}
+
+          {% set flow =
+             states('sensor.lelit_mara_x_v2_water_flow') | float(0) %}
+
+          {% set steam_wand =
+             states('sensor.kuche_lelit_mara_x_v2_steam_wand') | float(none) %}
+
+          {% set hot_water =
+             states('sensor.kuche_lelit_mara_x_v2_hot_water_spout') | float(none) %}
+
+          {% set ready =
+             steam_target >=110 and
+             hx >= 90 %}
+
+          {% if steam_wand is not none and steam_wand >= 110
+                and flow <= 20
+                and hot_water is not none and hot_water < 85 %}
+            🟣 Steam
+
+          {% elif hot_water is not none and hot_water > 70 and flow > 20 %}
+            🫖 Hot Water
+
+          {% elif hot_water is not none and flow > 20 %}
+            🔵 Water Flow
+
+          {% elif pump or flow > 20 %}
+            ⚪ Pump Active
+
+          {% elif ready %}
+            🟢 Ready
+
+          {% elif heating %}
+            🟡 Heating
+
+          {% elif steam_target == 0 %}
+            ⚫ Standby
+
+          {% else %}
+            🟠 Warming Up
+
+          {% endif %}
+
+
+  - sensor:
+      - name: "MaraX Water Quality"
+        unique_id: marax_water_quality
+        availability: >-
+          {{ is_number(states('sensor.kuche_lelit_mara_x_v2_mara_x_tds_compensated')) }}
+        icon: mdi:water-check
+        state: >
+          {% set ppm =
+             states('sensor.kuche_lelit_mara_x_v2_mara_x_tds_compensated') | float(0) %}
+
+          {% if ppm < 80 %}
+            🟢 Excellent
+          {% elif ppm < 150 %}
+            🟢 Good
+          {% elif ppm < 220 %}
+            🟡 Filter Aging
+          {% else %}
+            🔴 Replace Filter
+          {% endif %}
+
+
+  - binary_sensor:
+
+      - name: "MaraX Tank Upper Wet"
+        unique_id: marax_tank_upper_wet
+        availability: >-
+          {{ is_number(states('sensor.lelit_mara_x_v2_tank_upper')) and
+             is_number(states('sensor.lelit_mara_x_v2_tank_bottom')) }}
+        state: >
+          {% set upper = states('sensor.lelit_mara_x_v2_tank_upper') | float(0) %}
+          {% set bottom = states('sensor.lelit_mara_x_v2_tank_bottom') | float(0) %}
+          {{ (upper - bottom) < 5 }}
+
+      - name: "MaraX Tank Lower Wet"
+        unique_id: marax_tank_lower_wet
+        availability: >-
+          {{ is_number(states('sensor.lelit_mara_x_v2_tank_lower')) and
+             is_number(states('sensor.lelit_mara_x_v2_tank_bottom')) }}
+        state: >
+          {% set lower = states('sensor.lelit_mara_x_v2_tank_lower') | float(0) %}
+          {% set bottom = states('sensor.lelit_mara_x_v2_tank_bottom') | float(0) %}
+          {{ (lower - bottom) < 5 }}
+
+      - name: "MaraX Tank Bottom Wet"
+        unique_id: marax_tank_bottom_wet
+        availability: >-
+          {{ is_number(states('sensor.lelit_mara_x_v2_tank_bottom')) }}
+        state: >
+          {% set bottom = states('sensor.lelit_mara_x_v2_tank_bottom') | float(0) %}
+          {{ bottom < 45 }}
+
+  - sensor:
+      - name: "MaraX Tank Air Upper Delta"
+        unique_id: marax_tank_air_upper_delta
+        availability: >-
+          {{ is_number(states('sensor.kuche_lelit_mara_x_v2_tank_air')) and
+             is_number(states('sensor.lelit_mara_x_v2_tank_upper')) }}
+        unit_of_measurement: "°C"
+        state: >
+          {{
+            (
+              states('sensor.kuche_lelit_mara_x_v2_tank_air') | float(0)
+              -
+              states('sensor.lelit_mara_x_v2_tank_upper') | float(0)
+            ) | round(1)
+          }}
+
+      - name: "MaraX Tank Air Lower Delta"
+        unique_id: marax_tank_air_lower_delta
+        availability: >-
+          {{ is_number(states('sensor.kuche_lelit_mara_x_v2_tank_air')) and
+             is_number(states('sensor.lelit_mara_x_v2_tank_lower')) }}
+        unit_of_measurement: "°C"
+        state: >
+          {{
+            (
+              states('sensor.kuche_lelit_mara_x_v2_tank_air') | float(0)
+              -
+              states('sensor.lelit_mara_x_v2_tank_lower') | float(0)
+            ) | round(1)
+          }}
+
+      - name: "MaraX Tank Air Bottom Delta"
+        unique_id: marax_tank_air_bottom_delta
+        availability: >-
+          {{ is_number(states('sensor.kuche_lelit_mara_x_v2_tank_air')) and
+             is_number(states('sensor.lelit_mara_x_v2_tank_bottom')) }}
+        unit_of_measurement: "°C"
+        state: >
+          {{
+            (
+              states('sensor.kuche_lelit_mara_x_v2_tank_air') | float(0)
+              -
+              states('sensor.lelit_mara_x_v2_tank_bottom') | float(0)
+            ) | round(1)
+          }}
+          
+          
+      - name: "MaraX Tank Air Delta"
+        unique_id: marax_tank_air_delta
+        availability: >-
+          {{ is_number(states('sensor.kuche_lelit_mara_x_v2_tank_air')) and
+             is_number(states('sensor.lelit_mara_x_v2_tank_upper')) and
+             is_number(states('sensor.lelit_mara_x_v2_tank_lower')) and
+             is_number(states('sensor.lelit_mara_x_v2_tank_bottom')) }}
+        unit_of_measurement: "°C"
+        state: >
+          {{
+            (
+              states('sensor.kuche_lelit_mara_x_v2_tank_air') | float(0)
+              -
+              (
+                (
+                  states('sensor.lelit_mara_x_v2_tank_upper') | float(0)
+                  +
+                  states('sensor.lelit_mara_x_v2_tank_lower') | float(0)
+                  +
+                  states('sensor.lelit_mara_x_v2_tank_bottom') | float(0)
+                ) / 3
+              )
+            ) | round(1)
+          }}
+          
+  - sensor:
+      - name: "MaraX Tank Status"
+        unique_id: marax_tank_status
+        availability: >-
+          {{ has_value('binary_sensor.marax_tank_upper_wet') and
+             has_value('binary_sensor.marax_tank_lower_wet') and
+             has_value('binary_sensor.marax_tank_bottom_wet') }}
+        state: >
+          {% set upper = is_state('binary_sensor.marax_tank_upper_wet','on') %}
+          {% set lower = is_state('binary_sensor.marax_tank_lower_wet','on') %}
+          {% set bottom = is_state('binary_sensor.marax_tank_bottom_wet','on') %}
+
+          {% if upper and lower and bottom %}
+            Full
+          {% elif not upper and lower and bottom %}
+            3/4
+          {% elif not upper and not lower and bottom %}
+            1/2
+          {% elif not upper and not lower and not bottom %}
+            1/4
+          {% else %}
+            Unknown
+          {% endif %}
+
+      - name: "MaraX Tank Level"
+        unique_id: marax_tank_level
+        unit_of_measurement: "%"
+        availability: "{{ states('sensor.marax_tank_status') in ['Full', '3/4', '1/2', '1/4'] }}"
+        state: >-
+          {{ {'Full': 100, '3/4': 75, '1/2': 50, '1/4': 25}.get(states('sensor.marax_tank_status')) }}
+
+  - binary_sensor:
+      - name: "MaraX Water Low" 
+        unique_id: marax_water_low 
+        availability: "{{ is_number(states('sensor.marax_tank_level')) }}"
+        state: "{{ states('sensor.marax_tank_level') | float(100) <= 25 }}"

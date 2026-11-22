@@ -1,0 +1,358 @@
+substitutions:
+  device_name: mara-x
+  friendly_name: "Lelit Mara X v2"
+
+esphome:
+  name: ${device_name}
+  friendly_name: ${friendly_name}
+  min_version: 2026.4.0
+  name_add_mac_suffix: false
+
+  on_boot:
+    priority: -10
+    then:
+      # Run one TDS measurement after boot.
+      - script.execute: tds_measure
+
+esp32:
+  variant: esp32c3
+  board: seeed_xiao_esp32c3
+  framework:
+    type: esp-idf
+
+logger:
+  level: INFO
+  baud_rate: 0
+
+api:
+
+ota:
+  - platform: esphome
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  ap:
+    ssid: "Mara-X Fallback"
+    password: !secret marax_fallback_password
+captive_portal:
+
+web_server:
+  port: 80
+
+# Internal state
+globals:
+  - id: pump_last_state
+    type: bool
+    restore_value: no
+    initial_value: "false"
+
+# Power the TDS sensor only when a measurement is needed.
+# GPIO2 / D0 / A0 powers the current 3.3 V TDS sensor directly.
+switch:
+  - platform: gpio
+    pin: GPIO2
+    id: tds_power
+    name: "TDS Power"
+    restore_mode: ALWAYS_OFF
+
+script:
+  - id: tds_measure
+    mode: restart
+    then:
+      - switch.turn_on: tds_power
+
+      # Allow the TDS board and probe output to stabilize.
+      - delay: 15s
+
+      # Take multiple samples so the median filter can settle.
+      - component.update: mara_tds_voltage
+      - delay: 250ms
+      - component.update: mara_tds_voltage
+      - delay: 250ms
+      - component.update: mara_tds_voltage
+      - delay: 250ms
+      - component.update: mara_tds_voltage
+      - delay: 250ms
+      - component.update: mara_tds_voltage
+
+      # Keep the sensor on briefly after the last sample.
+      - delay: 1s
+      - switch.turn_off: tds_power
+
+one_wire:
+  - platform: gpio
+    pin: GPIO5
+
+text_sensor:
+  - platform: template
+    name: "Mara Firmware"
+    id: firmware_sensor
+
+  - platform: template
+    name: "Mara Flags"
+    id: flags_sensor
+
+  - platform: template
+    name: "Mara Status"
+    id: mara_status
+
+sensor:
+  # Gicar / UART telemetry
+  - platform: template
+    name: "Mara Steam Target"
+    id: steam_target_sensor
+    unit_of_measurement: "°C"
+    accuracy_decimals: 0
+    filters:
+      - median:
+          window_size: 5
+          send_every: 1
+
+  - platform: template
+    name: "Mara Steam Actual"
+    id: steam_actual_sensor
+    unit_of_measurement: "°C"
+    accuracy_decimals: 0
+    filters:
+      - median:
+          window_size: 5
+          send_every: 1
+
+  - platform: template
+    name: "Mara Heat Exchanger Actual"
+    id: hx_actual_sensor
+    unit_of_measurement: "°C"
+    accuracy_decimals: 0
+    filters:
+      - median:
+          window_size: 5
+          send_every: 1
+
+  # Wi-Fi diagnostics
+  - platform: wifi_signal
+    name: "Mara X WiFi Signal"
+    id: wifi_signal_db
+    update_interval: 60s
+    filters:
+      - sliding_window_moving_average:
+          window_size: 5
+          send_every: 1
+
+  - platform: copy
+    source_id: wifi_signal_db
+    name: "Mara X WiFi Quality"
+    filters:
+      - lambda: |-
+          if (x <= -100) return 0;
+          if (x >= -50) return 100;
+          return 2 * (x + 100);
+    unit_of_measurement: "%"
+    accuracy_decimals: 0
+
+  # Tank temperature sensors
+  - platform: dallas_temp
+    address: !secret marax_address_tank_air
+    name: "Tank Air"
+    id: tank_air
+    update_interval: 30s
+
+  - platform: dallas_temp
+    address: !secret marax_address_tank_upper
+    name: "Tank Upper"
+    id: tank_upper
+    update_interval: 30s
+
+  - platform: dallas_temp
+    address: !secret marax_address_tank_lower
+    name: "Tank Lower"
+    id: tank_lower
+    update_interval: 30s
+
+  - platform: dallas_temp
+    address: !secret marax_address_tank_bottom
+    name: "Tank Bottom"
+    id: tank_bottom
+    update_interval: 30s
+
+  # External temperature sensors
+  - platform: dallas_temp
+    address: !secret marax_address_hot_water_spout
+    name: "Hot Water Spout"
+    id: hot_water_spout
+    update_interval: 2s
+
+  - platform: dallas_temp
+    address: !secret marax_address_steam_wand
+    name: "Steam Wand"
+    id: steam_wand
+    update_interval: 2s
+
+  # Flowmeter
+  - platform: pulse_meter
+    pin:
+      number: GPIO4
+      mode:
+        input: true
+        pullup: true
+    name: "Water Flow"
+    id: water_flow
+    unit_of_measurement: "ml/min"
+    accuracy_decimals: 0
+    timeout: 2s
+    internal_filter: 5ms
+    filters:
+      - lambda: |-
+          return (x / 2016.0) * 1000.0;
+    total:
+      name: "Water Total"
+      id: water_total
+      unit_of_measurement: "ml"
+      accuracy_decimals: 0
+      filters:
+        - lambda: |-
+            return (x / 2016.0) * 1000.0;
+
+  # TDS sensor
+  # GPIO2 powers the TDS board. ADC on GPIO3 is updated only by script.
+  - platform: adc
+    pin: GPIO3
+    name: "Mara X TDS Raw Voltage"
+    id: mara_tds_voltage
+    attenuation: 12db
+    update_interval: never
+    unit_of_measurement: "V"
+    accuracy_decimals: 3
+    filters:
+      - lambda: |-
+          if (!id(tds_power).state) {
+            return {};
+          }
+          if (x < 0.02) {
+            return {};
+          }
+          return x;
+      - median:
+          window_size: 7
+          send_every: 1
+          send_first_at: 1
+
+  - platform: template
+    name: "Mara X TDS Compensated"
+    id: mara_tds_compensated
+    unit_of_measurement: "ppm"
+    accuracy_decimals: 0
+    lambda: |-
+      if (!id(mara_tds_voltage).has_state() || !id(tank_bottom).has_state()) {
+        return NAN;
+      }
+
+      float voltage = id(mara_tds_voltage).state;
+      float temp = id(tank_bottom).state;
+
+      float compensation = 1.0 + 0.02 * (temp - 25.0);
+      if (compensation <= 0.0) {
+        return NAN;
+      }
+
+      float compensated_voltage = voltage / compensation;
+
+      float tds =
+        (133.42 * compensated_voltage * compensated_voltage * compensated_voltage
+        -255.86 * compensated_voltage * compensated_voltage
+        +857.39 * compensated_voltage) * 0.5;
+
+      // Clamp impossible values
+      if (tds < 0)
+        tds = 0;
+      
+      if (tds > 2000)
+        tds = 2000;
+      
+      return roundf(tds);
+
+binary_sensor:
+  - platform: template
+    name: "Heating"
+    id: heating_sensor
+
+  - platform: template
+    name: "Pump"
+    id: pump_sensor
+
+uart:
+  id: mara_uart
+  rx_pin:
+    number: GPIO20
+    inverted: true
+  baud_rate: 9600
+  debug:
+    direction: RX
+    dummy_receiver: true
+    after:
+      delimiter: "\r\n"
+    sequence:
+      - lambda: |-
+          std::string s(bytes.begin(), bytes.end());
+
+          while (!s.empty() && (s.back() == '\r' || s.back() == '\n')) {
+            s.pop_back();
+          }
+
+          char firmware[16];
+          int steam_target;
+          int steam_actual;
+          int hx_actual;
+          char flags[16];
+          int heating;
+          int pump;
+
+          int result = sscanf(
+            s.c_str(),
+            "%15[^,],%d,%d,%d,%15[^,],%d,%d",
+            firmware,
+            &steam_actual,
+            &steam_target,
+            &hx_actual,
+            flags,
+            &heating,
+            &pump
+          );
+
+          if (result != 7) {
+            return;
+          }
+
+          static uint32_t invalid_packets = 0;
+
+          if (hx_actual < 20 || hx_actual > 150) {
+            invalid_packets++;
+            ESP_LOGW("mara",
+                    "Discarding invalid HX value: %d (count=%u)",
+                    hx_actual,
+                    invalid_packets);
+            return;
+          }
+
+          if (steam_target < 0 || steam_target > 160) {
+            ESP_LOGW("mara", "Discarding invalid Steam Target: %d", steam_target);
+            return;
+          }
+
+          id(firmware_sensor).publish_state(firmware);
+          id(flags_sensor).publish_state(flags);
+          id(steam_target_sensor).publish_state(steam_target);
+          id(steam_actual_sensor).publish_state(steam_actual);
+          id(hx_actual_sensor).publish_state(hx_actual);
+          id(heating_sensor).publish_state(heating != 0);
+
+          bool pump_now = (pump != 0);
+          id(pump_sensor).publish_state(pump_now);
+
+          // Start a TDS measurement once when the pump changes from OFF to ON.
+          if (pump_now && !id(pump_last_state)) {
+            id(tds_measure).execute();
+          }
+
+          id(pump_last_state) = pump_now;
