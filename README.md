@@ -30,6 +30,18 @@ Bei Pumpenstart öffnet sich **Bezug**. Spülstöße unter drei Sekunden führen
 
 Die Karte rechnet den Wasserfluss von ml/min in ml/s um und glättet die Live-Anzeige über zwei Sekunden. Für einen abgeschlossenen Bezug teilt sie die gemessene Wassermenge durch die Laufzeit. 36 ml in 30 Sekunden ergeben 1,2 ml/s. Die Grenzen für die Farbanzeige stehen im Dashboard unter `flow_min_ml_s` und `flow_max_ml_s`.
 
+### Doppelzeigerinstrument
+
+Mit `show_flow_gauge: true` auf Kartenebene erscheint das analoge Instrument unter **Bezug**. Standardmäßig ist die numerische Ansicht aktiv. Der obere Zeiger zeigt das Zwei-Sekunden-Mittel, der untere die Wassermenge geteilt durch die Bezugsdauer. Bei Pumpenstopp geht der obere Zeiger auf null und der untere zeigt den Mittelwert des letzten Espressos. Bei fehlenden Messdaten wird der betroffene Zeiger ausgeblendet.
+
+Die grünen Bögen übernehmen `flow_min_ml_s` und `flow_max_ml_s`. Die Standardskala reicht bis 3 ml/s und erweitert sich bei einem höheren Richtbereich. Das Skalenende lässt sich mit `flow_gauge_max_ml_s` festlegen. Werte über dem Skalenende sind digital ablesbar.
+
+```yaml
+# In der Konfiguration der Karte, auf derselben Ebene wie entities
+show_flow_gauge: true
+flow_gauge_max_ml_s: 6
+```
+
 ## Lizenz
 
 Die Mara-X-Display-Card und die mitgelieferten Konfigurationen stehen unter der [MIT-Lizenz](LICENSE). Das Tablet-Layout orientiert sich an der [Braumeister-Display-Card](https://github.com/DanielP-1337/braumeister-display-card).
